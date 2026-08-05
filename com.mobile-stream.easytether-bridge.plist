@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.mobile-stream.easytether-bridge</string>
+
+	<!--
+	    Started by IOKit when a device exposing the ADB interface appears,
+	    the same trigger the vendor's own LaunchDaemon uses: USB class 255,
+	    subclass 66, protocol 1.
+	-->
+	<key>LaunchEvents</key>
+	<dict>
+		<key>com.apple.iokit.matching</key>
+		<dict>
+			<key>easytether-bridge.adb</key>
+			<dict>
+				<key>IOProviderClass</key>
+				<string>IOUSBInterface</string>
+				<key>bInterfaceSubClass</key>
+				<integer>66</integer>
+				<key>bInterfaceProtocol</key>
+				<integer>1</integer>
+				<key>IOMatchLaunchStream</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/easytether-bridge</string>
+	</array>
+
+	<!--
+	    The daemon reconnects on its own, so let it keep running; launchd
+	    restarts it only if it exits.
+	-->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<key>StandardOutPath</key>
+	<string>/var/log/easytether-bridge.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/easytether-bridge.log</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+</dict>
+</plist>

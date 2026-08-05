@@ -1,0 +1,8 @@
+*.o
+*.dSYM/
+/easytether-bridge
+/test/unit
+/test/protocol
+/test/mockphone
+.claude/
+.DS_Store
