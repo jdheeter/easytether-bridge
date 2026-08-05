@@ -78,6 +78,9 @@ size_t et_record_encode(uint8_t *out, const uint8_t *frame, size_t len);
 #define ETHERTYPE_ARP    0x0806
 #define ETHERTYPE_IPV6   0x86dd
 
+/* 255.255.255.255.  Being all-ones, its byte order does not matter. */
+#define IPV4_BROADCAST   0xffffffffu
+
 extern const uint8_t eth_broadcast[ETH_ALEN];
 
 /*
@@ -186,6 +189,20 @@ static inline void put_le16(uint8_t *p, uint16_t v)
 static inline uint16_t get_le16(const uint8_t *p)
 {
 	return (uint16_t)(((uint16_t)p[1] << 8) | p[0]);
+}
+
+static inline uint32_t get_be32(const uint8_t *p)
+{
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+	       ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+
+static inline void put_be32(uint8_t *p, uint32_t v)
+{
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
 }
 
 /* The ethertype of a frame long enough to have one. */

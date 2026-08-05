@@ -1,7 +1,6 @@
 #include "proto.h"
 #include "util.h"
 
-#include <arpa/inet.h>
 #include <string.h>
 
 const uint8_t eth_broadcast[ETH_ALEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
@@ -150,35 +149,22 @@ size_t arp_build(uint8_t *out, uint16_t op,
 #define UDP_PORT_SERVER 67
 #define UDP_PORT_CLIENT 68
 
-struct ipv4_hdr {
-	uint8_t  ver_ihl;
-	uint8_t  tos;
-	uint16_t total_len;
-	uint16_t id;
-	uint16_t frag;
-	uint8_t  ttl;
-	uint8_t  proto;
-	uint16_t check;
-	uint32_t src;
-	uint32_t dst;
-};
-
-struct udp_hdr {
-	uint16_t sport;
-	uint16_t dport;
-	uint16_t len;
-	uint16_t check;
-};
+#define IPV4_HDR_LEN 20
+#define UDP_HDR_LEN   8
 
 uint16_t udp_checksum(uint32_t src, uint32_t dst, const uint8_t *udp, size_t len)
 {
+	const uint8_t *sp = (const uint8_t *)&src;
+	const uint8_t *dp = (const uint8_t *)&dst;
 	uint32_t sum = 0;
 	size_t i;
 
-	sum += (ntohl(src) >> 16) & 0xffff;
-	sum += ntohl(src) & 0xffff;
-	sum += (ntohl(dst) >> 16) & 0xffff;
-	sum += ntohl(dst) & 0xffff;
+	/* The addresses are already in network order; read them as bytes so this
+	 * needs no host byte-order helper. */
+	sum += get_be16(sp);
+	sum += get_be16(sp + 2);
+	sum += get_be16(dp);
+	sum += get_be16(dp + 2);
 	sum += 17;                      /* IPPROTO_UDP */
 	sum += (uint32_t)len;
 
@@ -199,13 +185,12 @@ size_t dhcp_build(uint8_t *out, uint8_t msgtype, const uint8_t mac[ETH_ALEN],
                   const uint8_t *unicast_to, uint32_t unicast_dst_ip, const char *hostname)
 {
 	uint8_t datagram[ET_MTU];
-	uint8_t *dhcp = datagram + sizeof(struct ipv4_hdr) + sizeof(struct udp_hdr);
+	uint8_t *dhcp = datagram + IPV4_HDR_LEN + UDP_HDR_LEN;
 	uint8_t *o;
 	size_t dhcp_len, udp_len, total;
-	struct ipv4_hdr ip;
-	struct udp_hdr udp;
-	uint32_t dst_ip = unicast_to ? unicast_dst_ip : htonl(INADDR_BROADCAST);
+	uint32_t dst_ip = unicast_to ? unicast_dst_ip : IPV4_BROADCAST;
 	uint32_t src_ip = ciaddr;
+	uint16_t ck;
 
 	memset(datagram, 0, sizeof datagram);
 
@@ -224,7 +209,7 @@ size_t dhcp_build(uint8_t *out, uint8_t msgtype, const uint8_t mac[ETH_ALEN],
 	put_be16(dhcp + 10, ciaddr ? 0x0000 : 0x8000);
 	memcpy(dhcp + 12, &ciaddr, 4);  /* ciaddr */
 	memcpy(dhcp + 28, mac, ETH_ALEN);
-	memcpy(dhcp + BOOTP_LEN, &(uint32_t){ htonl(DHCP_COOKIE) }, 4);
+	put_be32(dhcp + BOOTP_LEN, DHCP_COOKIE);
 
 	o = dhcp + BOOTP_LEN + 4;
 	*o++ = 53; *o++ = 1; *o++ = msgtype;
@@ -271,32 +256,26 @@ size_t dhcp_build(uint8_t *out, uint8_t msgtype, const uint8_t mac[ETH_ALEN],
 	if (dhcp_len < DHCP_MIN_PAYLOAD)
 		dhcp_len = DHCP_MIN_PAYLOAD;
 
-	udp_len = sizeof(struct udp_hdr) + dhcp_len;
-	total = sizeof(struct ipv4_hdr) + udp_len;
+	udp_len = UDP_HDR_LEN + dhcp_len;
+	total = IPV4_HDR_LEN + udp_len;
 
-	memset(&udp, 0, sizeof udp);
-	udp.sport = htons(UDP_PORT_CLIENT);
-	udp.dport = htons(UDP_PORT_SERVER);
-	udp.len = htons((uint16_t)udp_len);
-	memcpy(datagram + sizeof(struct ipv4_hdr), &udp, sizeof udp);
+	/* IPv4 header */
+	datagram[0] = 0x45;                     /* version 4, 5 words of header */
+	datagram[1] = 0x10;                     /* IPTOS_LOWDELAY, as dhclient sends */
+	put_be16(datagram + 2, (uint16_t)total);
+	datagram[8] = 64;                       /* TTL   */
+	datagram[9] = 17;                       /* UDP   */
+	memcpy(datagram + 12, &src_ip, 4);
+	memcpy(datagram + 16, &dst_ip, 4);
+	ck = ip_checksum(datagram, IPV4_HDR_LEN);
+	put_be16(datagram + 10, ck);
 
-	udp.check = htons(udp_checksum(src_ip, dst_ip,
-	                               datagram + sizeof(struct ipv4_hdr), udp_len));
-	memcpy(datagram + sizeof(struct ipv4_hdr), &udp, sizeof udp);
-
-	memset(&ip, 0, sizeof ip);
-	ip.ver_ihl = 0x45;
-	ip.tos = 0x10;                  /* IPTOS_LOWDELAY, as dhclient sends */
-	ip.total_len = htons((uint16_t)total);
-	ip.id = 0;
-	ip.frag = 0;
-	ip.ttl = 64;
-	ip.proto = 17;
-	ip.src = src_ip;
-	ip.dst = dst_ip;
-	memcpy(datagram, &ip, sizeof ip);
-	ip.check = htons(ip_checksum(datagram, sizeof ip));
-	memcpy(datagram, &ip, sizeof ip);
+	/* UDP header, then its checksum over the completed datagram */
+	put_be16(datagram + IPV4_HDR_LEN,     UDP_PORT_CLIENT);
+	put_be16(datagram + IPV4_HDR_LEN + 2, UDP_PORT_SERVER);
+	put_be16(datagram + IPV4_HDR_LEN + 4, (uint16_t)udp_len);
+	ck = udp_checksum(src_ip, dst_ip, datagram + IPV4_HDR_LEN, udp_len);
+	put_be16(datagram + IPV4_HDR_LEN + 6, ck);
 
 	return eth_build(out, unicast_to ? unicast_to : eth_broadcast, mac,
 	                 ETHERTYPE_IPV4, datagram, total);
@@ -308,7 +287,6 @@ int dhcp_parse_frame(const uint8_t *frame, size_t flen, const uint8_t mac[ETH_AL
 	const uint8_t *ip, *udp, *dhcp, *opt, *end;
 	size_t ihl, iplen, udplen, dhcplen;
 	uint8_t msgtype = 0;
-	uint32_t cookie;
 
 	if (flen < ETH_HDR_LEN + 20 + 8 + BOOTP_LEN + 4)
 		return 0;
@@ -355,8 +333,7 @@ int dhcp_parse_frame(const uint8_t *frame, size_t flen, const uint8_t mac[ETH_AL
 	if (dhcp[2] == ETH_ALEN && memcmp(dhcp + 28, mac, ETH_ALEN) != 0)
 		return 0;
 
-	memcpy(&cookie, dhcp + BOOTP_LEN, 4);
-	if (ntohl(cookie) != DHCP_COOKIE)
+	if (get_be32(dhcp + BOOTP_LEN) != DHCP_COOKIE)
 		return -1;
 
 	memset(out, 0, sizeof *out);
@@ -418,11 +395,8 @@ int dhcp_parse_frame(const uint8_t *frame, size_t flen, const uint8_t mac[ETH_AL
 				out->mtu = get_be16(opt);
 			break;
 		case 51:
-			if (len >= 4) {
-				uint32_t v;
-				memcpy(&v, opt, 4);
-				out->lease_secs = ntohl(v);
-			}
+			if (len >= 4)
+				out->lease_secs = get_be32(opt);
 			break;
 		case 53:
 			if (len >= 1)

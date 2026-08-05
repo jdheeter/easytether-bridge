@@ -152,12 +152,17 @@ ping 192.168.117.1                            # terminal 3
 `-D` leaves DNS alone and `-R` skips the default route, so the mock cannot
 black-hole your real networking.
 
-Two automated suites need no root and no phone:
+Three checks need no root and no phone:
 
 ```bash
 make check           # unit tests: record arithmetic, checksums, ARP, DHCP
 make protocol-test   # a full conversation against the mock phone
+make windows-check   # the protocol core still cross-compiles for Windows
 ```
+
+The last one needs `brew install mingw-w64` and guards the property a port
+depends on: `src/proto.c` has no platform dependency at all and builds
+unmodified for 32- and 64-bit Windows. See [docs/PORTING.md](docs/PORTING.md).
 
 The same client also runs against a **real** phone without root, which is how
 the protocol above was confirmed. With the phone plugged in, authorized, and

@@ -13,7 +13,7 @@ pure computation over byte buffers.
 
 | File | Lines | Platform calls | Verdict |
 | --- | --- | --- | --- |
-| `src/proto.c/h` | 643 | none (only `htons`/`htonl`/`ntohl` from `<arpa/inet.h>`, plus `<string.h>`) | **Reuse verbatim.** Swap one include. |
+| `src/proto.c/h` | 643 | **none at all** — `<stddef.h>`, `<stdint.h>`, `<string.h>` | **Reuse verbatim**, with no edit whatsoever. Verified: see §4a. |
 | `src/util.c/h` | 259 | `clock_gettime`, `fcntl`, `flockfile`, `read`/`write` | Reuse with a ~30-line shim. |
 | `src/adb.c/h` | 283 | BSD sockets, `posix_spawn`, `waitpid` | Reuse the logic; swap the socket calls. |
 | `src/bridge.c/h` | 825 | `poll` | Reuse the state machine and forwarding; replace the multiplexing. |
@@ -121,15 +121,53 @@ With `LINK_L2_ETHERNET`, `main.c` skips `enter_discover()` entirely, never
 calls the `netcfg_*` functions, and its inbound path becomes
 `link_write(frame)` with no parsing at all.
 
+## 4a. Verified so far
+
+Run `make windows-check` on any machine with `brew install mingw-w64`.
+
+`src/proto.c` cross-compiles **unmodified** for both `x86_64-w64-mingw32` and
+`i686-w64-mingw32`, with `-Wall -Wextra -Wshadow -Wpointer-arith
+-Wstrict-prototypes -Werror`. That is step 1 of the bring-up order already
+done, and the Makefile target keeps it that way — a stray POSIX include in the
+protocol core would be the most expensive regression in the tree, so it is
+guarded rather than hoped for.
+
+Getting there took one change: `proto.c` used to pull in `<arpa/inet.h>` for
+`htons`/`htonl`/`ntohl`, and built its IPv4 and UDP headers through structs.
+Both are gone. Addresses are kept in network byte order and read a byte at a
+time through `get_be16`/`get_be32`, and the headers are written directly into
+the datagram. The file now depends on no platform header, no struct layout and
+no host endianness, which is why the 32-bit target passes too.
+
+Other findings from the same session, on macOS 15 with mingw-w64 14:
+
+* Homebrew's mingw-w64 ships **only `i686` and `x86_64`** — no `aarch64`. A VM
+  on an Apple Silicon Mac runs Windows on ARM, so an x86_64 build runs under
+  its x64 emulation. Workable, but an extra variable while debugging a driver,
+  and it rules out testing a native ARM64 build.
+* Every Win32 API this guide names resolves against mingw's headers:
+  `CreateUnicastIpAddressEntry`, `CreateIpForwardEntry2`, `SetIpInterfaceEntry`,
+  `ConvertInterfaceGuidToLuid`, `WSAEventSelect`, `CM_Register_Notification`.
+* **`SetInterfaceDnsSettings` is not in mingw's headers.** `GetProcAddress` is
+  therefore mandatory rather than merely defensive.
+* Both `adb.c` defects below were confirmed by the compiler, at the exact lines:
+  `error: 'struct sockaddr_in' has no member named 'sin_len'` and
+  `error: passing argument 4 of 'setsockopt' from incompatible pointer type`.
+  Note that GCC only catches the second because the call passes `&tv` uncast;
+  add the `(const char *)` cast Winsock wants and it becomes the silent
+  ten-seconds-becomes-ten-milliseconds bug.
+* Clang alone emits Windows COFF objects, but has no Win32 headers, so the
+  cross toolchain is still required.
+
 ## 4. Bring-up order
 
 This is the important part. **Defer the virtual adapter until last** — it is
 the hardest, least portable piece, and everything else can be proven without
 it, without a phone, and without USB.
 
-1. **Compile `proto.c` and `test/unit.c`.** No I/O whatsoever. Proves the
-   toolchain, the byte-order assumptions and struct packing on the new target.
-   Should be an afternoon, and it validates the most valuable 400 lines.
+1. ~~**Compile `proto.c`.**~~ **Done** — `make windows-check`; see §4a.
+   Next in this step is `test/unit.c`, which needs `test/testutil.c` ported
+   first (it uses `<arpa/inet.h>`, `<poll.h>` and `<unistd.h>`).
 2. **Port `adb.c` to the platform's sockets, then run `test/protocol` against
    `test/mockphone` over loopback TCP.** Still no phone, no USB, no driver, no
    admin rights. This proves the ADB handshake, the hello, the record framing,
@@ -499,7 +537,8 @@ retail drivers require the full WHCP/HLK path.
 
 ## 11. Checklist
 
-- [ ] `proto.c` + `test/unit.c` compile and pass. No I/O yet.
+- [x] `proto.c` cross-compiles for Windows, unmodified. `make windows-check`.
+- [ ] `test/testutil.c` + `test/unit.c` compile and pass. No I/O yet.
 - [ ] `adb.c` on Winsock. Delete `sin_len`; fix `SO_RCVTIMEO` to `DWORD` ms.
 - [ ] `mockphone` compiles; `test/protocol` passes against it over loopback.
 - [ ] `test/protocol 5037 --dns` passes against a real phone via `adb.exe`.

@@ -45,6 +45,32 @@ src/netcfg.o: src/netcfg.h src/proto.h src/util.h
 src/adb.o:    src/adb.h src/util.h
 src/util.o:   src/util.h
 
+# --- Windows port, work in progress -------------------------------------
+#
+# The protocol core is platform-independent and must stay that way: it is the
+# part a port reuses verbatim, so a stray POSIX include here would be the most
+# expensive kind of regression.  This target proves it still cross-compiles,
+# for 64- and 32-bit Windows, under the same warnings as the native build.
+#
+# Needs a cross toolchain:  brew install mingw-w64
+# Everything else (utun.c, netcfg.c, the event loop) is not ported yet --
+# see docs/PORTING.md.
+
+WIN_CC64 ?= x86_64-w64-mingw32-gcc
+WIN_CC32 ?= i686-w64-mingw32-gcc
+WIN_PORTABLE := src/proto.c
+
+.PHONY: windows-check
+windows-check:
+	@command -v $(WIN_CC64) >/dev/null 2>&1 || \
+		{ echo "no $(WIN_CC64); brew install mingw-w64" >&2; exit 1; }
+	@for cc in $(WIN_CC64) $(WIN_CC32); do \
+		echo "  $$cc"; \
+		$$cc -std=c11 -Wall -Wextra -Wshadow -Wpointer-arith \
+		     -Wstrict-prototypes -Werror -c $(WIN_PORTABLE) -o /dev/null || exit 1; \
+	done
+	@echo "the protocol core still builds for Windows"
+
 # --- test harness -------------------------------------------------------
 TEST_SRC := test/testutil.c src/proto.c src/util.c
 
