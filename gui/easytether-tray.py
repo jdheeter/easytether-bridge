@@ -32,12 +32,37 @@ except (ValueError, ImportError):
         INDICATOR = None
 
 BRIDGE = os.environ.get("EASYTETHER_BRIDGE", "/usr/local/bin/easytether-bridge")
+UNIT = "easytether-bridge.service"
+SYSTEMCTL = shutil.which("systemctl") or "/usr/bin/systemctl"
 IFNAME = "tun-easytether"
 GW = "192.168.117.1"
 
 
 def iface_up() -> bool:
     return Path(f"/sys/class/net/{IFNAME}").exists()
+
+
+def has_unit() -> bool:
+    return Path("/etc/systemd/system/" + UNIT).exists() or Path(
+        "/lib/systemd/system/" + UNIT
+    ).exists()
+
+
+def unit_active() -> bool:
+    if not has_unit():
+        return False
+    r = subprocess.run(
+        [SYSTEMCTL, "is-active", "--quiet", UNIT],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return r.returncode == 0
+
+
+def sudo_cmd(*args: str) -> list[str]:
+    sudo = shutil.which("sudo") or "sudo"
+    return [sudo, "-n", *args]
 
 
 class App:
@@ -80,7 +105,7 @@ class App:
         hint.set_xalign(0)
         hint.set_text(
             "Phone: USB debugging on, EasyTether app open, USB tethering enabled.\n"
-            "Test with curl https://example.com — ping to the internet will not work."
+            "The daemon starts when the phone is plugged in. Test with curl https://example.com."
         )
         box.pack_start(hint, False, False, 0)
         self.win.add(box)
@@ -129,11 +154,20 @@ class App:
     def on_connect(self, *_args) -> None:
         if self.proc and self.proc.poll() is None:
             return
+        if has_unit():
+            cmd = sudo_cmd(SYSTEMCTL, "start", UNIT)
+            self.append("> " + " ".join(cmd))
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if r.returncode != 0:
+                self.append((r.stderr or r.stdout or "systemctl start failed").strip())
+                return
+            self.connect_btn.set_sensitive(False)
+            self.disconnect_btn.set_sensitive(True)
+            return
         if not Path(BRIDGE).exists():
             self.append(f"missing {BRIDGE}; run linux/install.sh")
             return
-        sudo = shutil.which("sudo") or "sudo"
-        cmd = [sudo, "-n", BRIDGE, "-v"]
+        cmd = sudo_cmd(BRIDGE, "-v")
         self.append("> " + " ".join(cmd))
         try:
             self.proc = subprocess.Popen(
@@ -165,6 +199,10 @@ class App:
         return True
 
     def on_disconnect(self, *_args) -> None:
+        if has_unit():
+            cmd = sudo_cmd(SYSTEMCTL, "stop", UNIT)
+            self.append("> " + " ".join(cmd))
+            subprocess.run(cmd, capture_output=True, text=True, check=False)
         if self.proc and self.proc.poll() is None:
             try:
                 os.killpg(self.proc.pid, signal.SIGTERM)
@@ -183,17 +221,30 @@ class App:
         return False
 
     def on_quit(self, *_args) -> None:
-        self.on_disconnect()
+        # Leave the systemd unit running so plug-in auto-reconnect survives
+        # closing the tray. Disconnect is explicit.
+        if self.proc and self.proc.poll() is None:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         Gtk.main_quit()
 
     def poll_status(self) -> bool:
         up = iface_up()
+        active = unit_active() or (self.proc is not None and self.proc.poll() is None)
         if up:
             self.set_status(f"Connected — {IFNAME} via {GW}", True)
-        elif self.proc and self.proc.poll() is None:
+            self.connect_btn.set_sensitive(False)
+            self.disconnect_btn.set_sensitive(True)
+        elif active:
             self.set_status("Connecting…", False)
+            self.connect_btn.set_sensitive(False)
+            self.disconnect_btn.set_sensitive(True)
         else:
             self.set_status("Disconnected", False)
+            self.connect_btn.set_sensitive(True)
+            self.disconnect_btn.set_sensitive(False)
         return True
 
 

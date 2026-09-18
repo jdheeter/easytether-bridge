@@ -41,6 +41,34 @@ if [[ -f /lib/systemd/system/easytether-usb@.service ]]; then
 	systemctl mask easytether-usb@.service >/dev/null 2>&1 || true
 fi
 
+OWNER="${SUDO_USER:-}"
+if [[ -z "$OWNER" || "$OWNER" == "root" ]]; then
+	OWNER="$(loginctl list-users --no-legend 2>/dev/null | awk '$2!="root"{print $2; exit}')"
+fi
+if [[ -z "$OWNER" ]]; then
+	OWNER="osis"
+fi
+
+install -d /etc/systemd/system
+sed "s/__EASYTETHER_USER__/${OWNER}/g" \
+	"$ROOT/linux/easytether-bridge.service" \
+	> /etc/systemd/system/easytether-bridge.service
+install -m 644 "$ROOT/linux/99-easytether-bridge.rules" \
+	/etc/udev/rules.d/99-easytether-bridge.rules
+# Same filename as the vendor package: a /dev/null link in /etc disables it.
+ln -sfn /dev/null /etc/udev/rules.d/99-easytether-usb.rules
+udevadm control --reload-rules 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable easytether-bridge.service >/dev/null
+# Hand-started copies fight the phone (one tunnel client). Prefer the unit.
+systemctl stop easytether-bridge.service >/dev/null 2>&1 || true
+if command -v killall >/dev/null 2>&1; then
+	killall -TERM easytether-bridge >/dev/null 2>&1 || true
+	sleep 1
+	killall -KILL easytether-bridge >/dev/null 2>&1 || true
+fi
+systemctl start easytether-bridge.service
+
 install -d /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/unmanaged-easytether.conf << 'EOF'
 [keyfile]
@@ -51,13 +79,15 @@ if command -v nmcli >/dev/null 2>&1; then
 	systemctl reload NetworkManager 2>/dev/null || true
 fi
 
-SUDO_USER_NAME="${SUDO_USER:-}"
+SUDO_USER_NAME="${SUDO_USER:-$OWNER}"
 if [[ -n "$SUDO_USER_NAME" && "$SUDO_USER_NAME" != "root" ]]; then
-	echo "$SUDO_USER_NAME ALL=(root) NOPASSWD: $PREFIX/bin/easytether-bridge" \
-		> /etc/sudoers.d/easytether-bridge
+	cat > /etc/sudoers.d/easytether-bridge << EOF
+$SUDO_USER_NAME ALL=(root) NOPASSWD: $PREFIX/bin/easytether-bridge
+$SUDO_USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl start easytether-bridge.service, /usr/bin/systemctl stop easytether-bridge.service, /usr/bin/systemctl restart easytether-bridge.service
+EOF
 	chmod 440 /etc/sudoers.d/easytether-bridge
 fi
 
 echo "installed $PREFIX/bin/easytether-bridge and easytether-tray"
-echo "start the tray from the app menu, or: easytether-tray"
-echo "or: sudo easytether-bridge -v"
+echo "udev starts easytether-bridge when an ADB phone is plugged in"
+echo "tray: easytether-tray   logs: journalctl -u easytether-bridge -f"

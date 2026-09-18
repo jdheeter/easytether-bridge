@@ -135,16 +135,17 @@ sudo apt install build-essential adb python3-gi gir1.2-gtk-3.0 \
   gir1.2-ayatanaappindicator3-0.1
 make && make check && make protocol-test
 sudo ./linux/install.sh
-easytether-tray          # Connect from the tray / window
-# or:
-sudo easytether-bridge -v
 ```
 
 `linux/install.sh` puts the binary in `/usr/local/bin`, a tray app in the
-desktop menu (autostarted on login), a passwordless sudoers drop-in for the
-bridge, and tells NetworkManager not to grab `tun-easytether`. If the 2018
-vendor `easytether` package is present, the installer masks
-`easytether-usb@.service` so it cannot steal the same TUN.
+desktop menu (autostarted on login), a systemd unit plus udev rule so the
+daemon starts when an ADB phone is plugged in (USB 255/66/1, same as macOS),
+a passwordless sudoers drop-in for the tray, and tells NetworkManager not to
+grab `tun-easytether`. If the 2018 vendor `easytether` package is present, the
+installer masks `easytether-usb@.service` so it cannot steal the same TUN.
+
+The daemon reconnects on its own. After six failed leases it exits and waits
+for the next plug-in. Logs: `journalctl -u easytether-bridge -f`.
 
 Before it can connect, all three of these must be true:
 
@@ -154,10 +155,11 @@ Before it can connect, all three of these must be true:
    "always allow from this computer".
 3. The EasyTether app is open on the phone with USB tethering switched on.
 
-Then watch it work:
+Then plug the cable in (or `systemctl start easytether-bridge`). Watch:
 
 ```bash
-sudo easytether-bridge -v
+journalctl -u easytether-bridge -f
+./check.sh
 ```
 
 ## Testing without a phone
