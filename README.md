@@ -137,8 +137,8 @@ make && make check && make protocol-test
 sudo ./linux/install.sh
 ```
 
-`linux/install.sh` puts the binary in `/usr/local/bin`, a tray app in the
-desktop menu (autostarted on login), a systemd unit plus udev rule so the
+`linux/install.sh` puts the binary in `/usr/local/bin`, a tray icon (autostarted on login — status and live RX/TX in the menu, no
+extra window), a systemd unit plus udev rule so the
 daemon starts when an ADB phone is plugged in (USB 255/66/1, same as macOS),
 a passwordless sudoers drop-in for the tray, and tells NetworkManager not to
 grab `tun-easytether`. If the 2018 vendor `easytether` package is present, the
