@@ -1,10 +1,12 @@
 # easytether-bridge
 
-A native macOS host driver for [EasyTether](http://www.mobile-stream.com/easytether/),
-written because the vendor's driver cannot work on Apple Silicon.
+A host driver for [EasyTether](http://www.mobile-stream.com/easytether/) on
+**macOS** (Apple Silicon) and **Linux** (Ubuntu 24.04). It speaks the vendor
+Android app's protocol over ADB and presents the tunnel as a layer-3 interface
+(`utun` on macOS, `tun-easytether` on Linux).
 
-Nothing here is a patch to the vendor's software. It speaks the same protocol
-to the same Android app and presents the result to macOS a different way.
+Nothing here is a patch to the vendor's software. It is a replacement for the
+*host-side driver* only.
 
 > **Independent project.** Not affiliated with, endorsed by, or supported by
 > Mobile Stream. "EasyTether" is their trademark and is used here only to say
@@ -48,15 +50,15 @@ interface has to be created some other way.
 
 ## What this does instead
 
-`utun`, the interface WireGuard and every modern macOS VPN uses. It needs root
-and nothing else — no kext, no entitlement, no SIP changes, no system
-extension.
+On macOS, `utun` — the same interface WireGuard uses. It needs root and nothing
+else: no kext, no entitlement, no SIP changes, no system extension. On Linux,
+`/dev/net/tun` as `tun-easytether` (iproute2 + systemd-resolved).
 
-The catch is that `utun` is layer 3 and the EasyTether tunnel carries raw
-Ethernet frames. The vendor's driver got ARP and DHCP for free by handing those
-frames to a real virtual NIC. This daemon terminates layer 2 itself: it has a
-small ARP responder and a DHCP client, strips and synthesises Ethernet headers,
-and hands bare IP packets to `utun`.
+Both are layer 3, and the EasyTether tunnel carries raw Ethernet frames. The
+vendor's driver got ARP and DHCP for free by handing those frames to a real
+virtual NIC. This daemon terminates layer 2 itself: it has a small ARP
+responder and a DHCP client, strips and synthesises Ethernet headers, and
+hands bare IP packets to the tunnel.
 
 ```
    phone (EasyTether app, USB tethering on)
@@ -65,7 +67,7 @@ and hands bare IP packets to `utun`.
      |  localabstract:easytetherx
    [ easytether-bridge: framing, ARP, DHCP client ]
      |
-   utunN  <->  macOS network stack
+   utunN / tun-easytether  <->  host network stack
 ```
 
 Going through the ADB server rather than driving USB directly means device
@@ -101,6 +103,8 @@ fixed `192.168.117.0/24`, takes `.1` as the gateway, and answers ARP.
 
 ## Building and installing
 
+### macOS
+
 ```bash
 make && make check
 sudo ./install.sh
@@ -122,6 +126,42 @@ replug.
 Never run one by hand while the LaunchDaemon is loaded. The phone serves a
 single client, so the second one sits there failing DHCP until it gives up.
 
+### Linux (Ubuntu 24.04)
+
+The vendor's last Linux package is Ubuntu 20.04 and needs OpenSSL 1.1. This
+tree speaks the same protocol over ADB and presents the link as `tun-easytether`
+(layer 3, same as macOS utun).
+
+```bash
+sudo apt install build-essential adb python3-gi gir1.2-gtk-3.0 \
+  gir1.2-ayatanaappindicator3-0.1
+make && make check && make protocol-test
+sudo ./linux/install.sh
+```
+
+`linux/install.sh` installs:
+
+- `/usr/local/bin/easytether-bridge` and `easytether-tray`
+- a tray icon (autostarted on login) whose menu is the whole UI: status,
+  address, live RX/TX, connect/disconnect — no extra window
+- a phone+USB tray mark, not the GNOME wifi glyph
+- `easytether-bridge.service` plus a udev rule on USB `255/66/1` (the same ADB
+  interface macOS matches), so the daemon starts when the phone is plugged in
+- a passwordless sudoers drop-in so the tray can start/stop the unit
+- NetworkManager unmanaged for `tun-easytether`
+
+If the 2018 vendor `easytether` package is present, the installer masks
+`easytether-usb@.service` and disables its udev rule so the two drivers cannot
+both grab the TUN.
+
+The daemon reconnects on its own. After six failed leases it exits and waits
+for the next plug-in. `sudo ./linux/install.sh --uninstall` removes it.
+
+```bash
+journalctl -u easytether-bridge -f
+./check.sh
+```
+
 Before it can connect, all three of these must be true:
 
 1. USB debugging is on in the phone's developer options.
@@ -130,11 +170,7 @@ Before it can connect, all three of these must be true:
    "always allow from this computer".
 3. The EasyTether app is open on the phone with USB tethering switched on.
 
-Then watch it work:
-
-```bash
-sudo easytether-bridge -v
-```
+Then plug the cable in (or `systemctl start easytether-bridge`).
 
 ## Testing without a phone
 
@@ -275,13 +311,16 @@ Run it in the foreground with `-v`; it says which of these it hit.
 | Works with Wi-Fi on, dead with Wi-Fi off | The resolver never got published, so DNS was quietly coming from Wi-Fi. Run `./check.sh`; if it reports no resolver entries, you are on a build from before that was fixed. |
 | Connects, but nothing loads | Check DNS separately: `dig @192.168.117.1 example.com`. If that works and browsing does not, the resolver did not take — see `./check.sh`. |
 | `ping 8.8.8.8` fails | Expected. See above — EasyTether carries only TCP and UDP. |
+| Linux: tray missing after install | `easytether-tray` is an AppIndicator; GNOME may need the AppIndicator extension. Start it from the app menu. |
+| Linux: plug-in does not start the daemon | `systemctl status easytether-bridge`; `udevadm info` on the ADB interface should show `SYSTEMD_WANTS=easytether-bridge.service`. The vendor udev rule must stay masked. |
+| Linux: `./check.sh` DNS ok but HTTPS fails | Confirm EasyTether USB tethering is on. Test `curl https://example.com`, not `ping`. |
 
 `./check.sh` reports all of this at once — interface, routes, resolver,
 primary service, and whether traffic is really leaving through the phone. Run
 it first when something looks wrong.
 
-To see the tunnel itself, `tcpdump -i utun6 -n` (substitute the name the daemon
-logs at startup).
+To see the tunnel itself, `tcpdump -i utun6 -n` or `tcpdump -i tun-easytether -n`
+(substitute the name the daemon logs at startup).
 
 ## Alternatives considered
 
@@ -310,7 +349,7 @@ Deeper material lives in [`docs/`](docs/):
 | --- | --- |
 | [PROTOCOL.md](docs/PROTOCOL.md) | The complete wire specification, the disassembly evidence behind each rule, the values a real phone hands out, and an honest list of what is still unknown. Read this first if you are porting. |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module map, data flow, the DHCP/ARP state machine and its non-obvious rules, buffering and back-pressure, extension points, testing layers. |
-| [PORTING.md](docs/PORTING.md) | What is platform-independent and what is not, and a concrete Windows port guide. |
+| [PORTING.md](docs/PORTING.md) | What is platform-independent and what is not. Linux is done; Windows is the remaining port. |
 | [GOTCHAS.md](docs/GOTCHAS.md) | Traps that cost real time, bugs that were introduced by "fixes", and a debugging playbook. |
 
 ## Licence
@@ -325,10 +364,13 @@ MIT — see [LICENSE](LICENSE). The protocol documentation in
 | `src/proto.c` | Record framing, Ethernet, ARP, DHCP, checksums. Platform-independent. |
 | `src/bridge.c` | One session: event loop, DHCP/ARP state machine, forwarding |
 | `src/main.c` | The process: arguments, privileges, reconnect loop |
-| `src/utun.c` | utun interface creation and packet I/O |
-| `src/netcfg.c` | `ifconfig` / `route` / SystemConfiguration |
+| `src/utun.c` | Virtual interface: Darwin utun, Linux `/dev/net/tun` |
+| `src/netcfg.c` | Address, routes, DNS: SCDynamicStore or iproute2/resolvectl |
 | `src/adb.c` | ADB server protocol client |
 | `src/util.c` | Logging, the byte FIFO, whole-buffer socket IO |
+| `gui/easytether-tray.py` | Linux AppIndicator: status, live RX/TX, start/stop |
+| `gui/icons/` | Phone+USB tray mark |
+| `linux/` | systemd unit, udev rule, installer, `check.sh` |
 | `test/testutil.c` | Framing over a socket and the phone's half of DHCP |
 | `test/unit.c` | Unit tests for the protocol logic |
 | `test/protocol.c` | A full protocol conversation, driven end to end |

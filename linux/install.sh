@@ -1,0 +1,145 @@
+#!/bin/bash
+# Install easytether-bridge + tray on Linux. Run from the repo root as root.
+set -euo pipefail
+PREFIX="${PREFIX:-/usr/local}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+	echo "linux/install.sh is for Linux; use ./install.sh on macOS" >&2
+	exit 1
+fi
+if [[ "$(id -u)" -ne 0 ]]; then
+	echo "re-run as root: sudo $0" >&2
+	exit 1
+fi
+
+uninstall() {
+	systemctl disable --now easytether-bridge.service >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/easytether-bridge.service
+	rm -f /etc/udev/rules.d/99-easytether-bridge.rules
+	if [[ -L /etc/udev/rules.d/99-easytether-usb.rules ]]; then
+		rm -f /etc/udev/rules.d/99-easytether-usb.rules
+	fi
+	udevadm control --reload-rules 2>/dev/null || true
+	systemctl unmask easytether-usb@.service >/dev/null 2>&1 || true
+	systemctl daemon-reload 2>/dev/null || true
+	rm -f "$PREFIX/bin/easytether-bridge" "$PREFIX/bin/easytether-tray"
+	rm -rf "$PREFIX/share/easytether-bridge"
+	rm -f "$PREFIX/share/icons/hicolor/scalable/apps/easytether.svg"
+	rm -f "$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+	rm -f /usr/share/applications/easytether-tray.desktop
+	rm -f /etc/xdg/autostart/easytether-tray.desktop
+	rm -f /etc/NetworkManager/conf.d/unmanaged-easytether.conf
+	rm -f /etc/sudoers.d/easytether-bridge
+	echo "removed easytether-bridge"
+}
+
+case "${1:-}" in
+"") ;;
+--uninstall) uninstall; exit 0 ;;
+*)	echo "usage: $0 [--uninstall]" >&2
+	exit 2 ;;
+esac
+
+make
+install -d "$PREFIX/bin"
+install -m 755 easytether-bridge "$PREFIX/bin/easytether-bridge"
+install -m 755 gui/easytether-tray.py "$PREFIX/bin/easytether-tray"
+
+ICON_DIR="$PREFIX/share/easytether-bridge/icons"
+install -d "$ICON_DIR"
+install -m 644 gui/icons/easytether-connected.svg gui/icons/easytether-offline.svg \
+	gui/icons/easytether.svg "$ICON_DIR/"
+shopt -s nullglob
+pngs=(gui/icons/*.png)
+shopt -u nullglob
+if ((${#pngs[@]})); then
+	install -m 644 "${pngs[@]}" "$ICON_DIR/"
+fi
+install -d "$PREFIX/share/icons/hicolor/scalable/apps"
+install -d "$PREFIX/share/icons/hicolor/48x48/apps"
+install -m 644 gui/icons/easytether.svg \
+	"$PREFIX/share/icons/hicolor/scalable/apps/easytether.svg"
+if [[ -f gui/icons/easytether@2.png ]]; then
+	install -m 644 gui/icons/easytether@2.png \
+		"$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+elif [[ -f gui/icons/easytether.png ]]; then
+	install -m 644 gui/icons/easytether.png \
+		"$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+fi
+gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
+
+DESKTOP_BODY="[Desktop Entry]
+Name=EasyTether
+Comment=USB tethering via the EasyTether Android app
+Exec=$PREFIX/bin/easytether-tray
+Icon=easytether
+Terminal=false
+Type=Application
+Categories=Network;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+"
+
+install -d /usr/share/applications /etc/xdg/autostart
+printf '%s' "$DESKTOP_BODY" > /usr/share/applications/easytether-tray.desktop
+printf '%s' "$DESKTOP_BODY" > /etc/xdg/autostart/easytether-tray.desktop
+
+# The 2018 vendor package also claims tun-easytether via udev. Mask it so
+# easytether-bridge is the only host driver.
+if [[ -f /lib/systemd/system/easytether-usb@.service ]]; then
+	systemctl mask easytether-usb@.service >/dev/null 2>&1 || true
+fi
+
+OWNER="${SUDO_USER:-}"
+if [[ -z "$OWNER" || "$OWNER" == "root" ]]; then
+	OWNER="$(loginctl list-users --no-legend 2>/dev/null | awk '$2!="root"{print $2; exit}')"
+fi
+if [[ -z "$OWNER" ]]; then
+	echo "could not determine a login user for ADB keys; run via sudo so SUDO_USER is set" >&2
+	exit 1
+fi
+
+install -d /etc/systemd/system
+sed "s/__EASYTETHER_USER__/${OWNER}/g" \
+	"$ROOT/linux/easytether-bridge.service" \
+	> /etc/systemd/system/easytether-bridge.service
+install -m 644 "$ROOT/linux/99-easytether-bridge.rules" \
+	/etc/udev/rules.d/99-easytether-bridge.rules
+# Same filename as the vendor package: a /dev/null link in /etc disables it.
+ln -sfn /dev/null /etc/udev/rules.d/99-easytether-usb.rules
+udevadm control --reload-rules 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable easytether-bridge.service >/dev/null
+# Hand-started copies fight the phone (one tunnel client). Prefer the unit.
+systemctl stop easytether-bridge.service >/dev/null 2>&1 || true
+if command -v killall >/dev/null 2>&1; then
+	killall -TERM easytether-bridge >/dev/null 2>&1 || true
+	sleep 1
+	killall -KILL easytether-bridge >/dev/null 2>&1 || true
+fi
+systemctl start easytether-bridge.service
+
+install -d /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/unmanaged-easytether.conf << 'EOF'
+[keyfile]
+unmanaged-devices=interface-name:tun-easytether
+EOF
+if command -v nmcli >/dev/null 2>&1; then
+	nmcli connection delete easytether >/dev/null 2>&1 || true
+	systemctl reload NetworkManager 2>/dev/null || true
+fi
+
+SUDO_USER_NAME="${SUDO_USER:-$OWNER}"
+if [[ -n "$SUDO_USER_NAME" && "$SUDO_USER_NAME" != "root" ]]; then
+	cat > /etc/sudoers.d/easytether-bridge << EOF
+$SUDO_USER_NAME ALL=(root) NOPASSWD: $PREFIX/bin/easytether-bridge
+$SUDO_USER_NAME ALL=(root) NOPASSWD: /usr/bin/systemctl start easytether-bridge.service, /usr/bin/systemctl stop easytether-bridge.service, /usr/bin/systemctl restart easytether-bridge.service
+EOF
+	chmod 440 /etc/sudoers.d/easytether-bridge
+fi
+
+echo "installed $PREFIX/bin/easytether-bridge and easytether-tray"
+echo "udev starts easytether-bridge when an ADB phone is plugged in"
+echo "tray: easytether-tray   logs: journalctl -u easytether-bridge -f"

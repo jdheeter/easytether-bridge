@@ -1,0 +1,6 @@
+# ADB interface (USB class 255, subclass 66, protocol 1) — same match the
+# macOS LaunchDaemon uses. Starts easytether-bridge on plug-in. The daemon
+# reconnects on its own and exits 0 after six failed leases, so a later add
+# event is what brings it back. linux/install.sh disables the vendor
+# 99-easytether-usb.rules so it cannot overwrite SYSTEMD_WANTS.
+ACTION=="add|bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ENV{INTERFACE}=="255/66/1", TAG+="systemd", ENV{SYSTEMD_WANTS}="easytether-bridge.service"

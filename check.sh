@@ -5,6 +5,9 @@
 #
 #   ./check.sh
 #
+if [[ "$(uname -s)" == "Linux" ]]; then
+	exec "$(dirname "$0")/linux/check.sh"
+fi
 SERVICE=com.mobile-stream.easytether-bridge
 GW=192.168.117.1
 

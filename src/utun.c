@@ -2,15 +2,98 @@
 #include "util.h"
 
 #include <errno.h>
-#include <net/if_utun.h>
 #include <netinet/in.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <linux/if_tun.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#else
+#include <net/if_utun.h>
 #include <sys/ioctl.h>
 #include <sys/kern_control.h>
 #include <sys/socket.h>
 #include <sys/sys_domain.h>
 #include <sys/uio.h>
-#include <unistd.h>
+#endif
+
+#ifdef __linux__
+int utun_open(struct utun *u, unsigned unit)
+{
+	struct ifreq ifr;
+	int fd;
+
+	(void)unit;
+	memset(u, 0, sizeof *u);
+
+	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
+	if (fd < 0) {
+		log_err("open(/dev/net/tun): %s%s", strerror(errno),
+		        errno == EPERM ? " (are you root?)" : "");
+		return -1;
+	}
+
+	memset(&ifr, 0, sizeof ifr);
+	ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+	snprintf(ifr.ifr_name, IFNAMSIZ, "tun-easytether");
+	if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
+		log_err("TUNSETIFF(%s): %s%s", ifr.ifr_name, strerror(errno),
+		        errno == EPERM ? " (are you root?)" : "");
+		close(fd);
+		return -1;
+	}
+
+	snprintf(u->name, sizeof u->name, "%s", ifr.ifr_name);
+	set_nonblock(fd);
+	u->fd = fd;
+	log_info("created %s", u->name);
+	return 0;
+}
+
+void utun_close(struct utun *u)
+{
+	if (u->fd > 0)
+		close(u->fd);
+	u->fd = -1;
+}
+
+ssize_t utun_read(struct utun *u, uint8_t *buf, size_t cap, int *af)
+{
+	ssize_t n = read(u->fd, buf, cap);
+
+	if (n < 0) {
+		if (errno == EAGAIN || errno == EINTR)
+			return 0;
+		log_err("read(%s): %s", u->name, strerror(errno));
+		return -1;
+	}
+	if (n < 1)
+		return 0;
+	*af = (buf[0] >> 4) == 6 ? AF_INET6 : AF_INET;
+	return n;
+}
+
+ssize_t utun_write(struct utun *u, int af, const uint8_t *pkt, size_t len)
+{
+	ssize_t n;
+
+	(void)af;
+	n = write(u->fd, pkt, len);
+	if (n < 0) {
+		if (errno == EAGAIN || errno == EINTR || errno == ENOBUFS)
+			return 0;
+		log_err("write(%s): %s", u->name, strerror(errno));
+		return -1;
+	}
+	return n;
+}
+
+#else /* __APPLE__ */
 
 int utun_open(struct utun *u, unsigned unit)
 {
@@ -115,3 +198,5 @@ ssize_t utun_write(struct utun *u, int af, const uint8_t *pkt, size_t len)
 	}
 	return n;
 }
+
+#endif /* __linux__ / __APPLE__ */

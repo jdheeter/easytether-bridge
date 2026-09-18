@@ -25,7 +25,9 @@ static int connect_local(int port)
 		return -1;
 
 	memset(&sa, 0, sizeof sa);
+#ifdef __APPLE__
 	sa.sin_len = sizeof sa;
+#endif
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons((uint16_t)port);
 	sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

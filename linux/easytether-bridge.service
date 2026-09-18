@@ -1,0 +1,19 @@
+[Unit]
+Description=EasyTether host driver (ADB to tun-easytether)
+Documentation=https://github.com/jdheeter/easytether-bridge
+After=network.target systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/easytether-bridge
+Restart=on-failure
+RestartSec=2
+# Six failed leases exit 0: phone is gone. Stay down until udev sees it again.
+KillMode=process
+TimeoutStopSec=8
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# Filled in by linux/install.sh so adb uses that user's RSA key, not root's.
+Environment=SUDO_USER=__EASYTETHER_USER__
+
+[Install]
+WantedBy=multi-user.target

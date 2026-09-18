@@ -25,9 +25,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
 #include <uuid/uuid.h>
+#endif
+#ifdef __linux__
+#include <dirent.h>
+#endif
 
 /* ------------------------------------------------------------ addressing */
 /*
@@ -36,17 +42,33 @@
  */
 static void make_mac(uint8_t mac[ETH_ALEN])
 {
-	uuid_t host;
-	struct timespec wait = { 0, 0 };
+	uint8_t host[32];
 	uint64_t h = 1469598103934665603ULL;   /* FNV-1a */
-	const uint8_t *p;
+	size_t n = 0;
 
-	if (gethostuuid(host, &wait) != 0)
-		memset(host, 0x5a, sizeof host);
+	memset(host, 0x5a, sizeof host);
+#ifdef __APPLE__
+	{
+		uuid_t uuid;
+		struct timespec wait = { 0, 0 };
+		if (gethostuuid(uuid, &wait) == 0) {
+			memcpy(host, uuid, sizeof uuid);
+			n = sizeof uuid;
+		}
+	}
+#endif
+	if (n == 0) {
+		FILE *f = fopen("/etc/machine-id", "r");
+		if (f) {
+			n = fread(host, 1, sizeof host, f);
+			fclose(f);
+		}
+	}
+	if (n == 0)
+		n = sizeof host;
 
-	p = (const uint8_t *)host;
-	for (size_t i = 0; i < sizeof(uuid_t); i++) {
-		h ^= p[i];
+	for (size_t i = 0; i < n; i++) {
+		h ^= host[i];
 		h *= 1099511628211ULL;
 	}
 
@@ -79,20 +101,92 @@ static const struct passwd *console_user(void)
 	return NULL;
 }
 
+/*
+ * Linux: ADB is USB class 255 / subclass 66 / protocol 1.  After reboot the
+ * phone is often plugged in before adbd is ready (still locked, or the USB
+ * mode notification has not been accepted).  launchd/udev only start us on
+ * the *add* event, so giving up while that interface still exists leaves the
+ * daemon dead until the next unplug.  Keep retrying in that case.
+ */
+static int adb_usb_iface_present(void)
+{
+#ifdef __linux__
+	DIR *dir = opendir("/sys/bus/usb/devices");
+	struct dirent *de;
+
+	if (!dir)
+		return 0;
+	while ((de = readdir(dir)) != NULL) {
+		char path[512];
+		unsigned cls = 0, sub = 0, proto = 0;
+		FILE *f;
+		int n = 0;
+
+		if (!strchr(de->d_name, ':'))
+			continue;
+		n = snprintf(path, sizeof path,
+		             "/sys/bus/usb/devices/%s/bInterfaceClass", de->d_name);
+		if (n < 0 || (size_t)n >= sizeof path)
+			continue;
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &cls) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		snprintf(path, sizeof path,
+		         "/sys/bus/usb/devices/%s/bInterfaceSubClass", de->d_name);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &sub) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		snprintf(path, sizeof path,
+		         "/sys/bus/usb/devices/%s/bInterfaceProtocol", de->d_name);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &proto) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		if (cls == 0xff && sub == 0x42 && proto == 0x01) {
+			closedir(dir);
+			return 1;
+		}
+	}
+	closedir(dir);
+#endif
+	return 0;
+}
+
 static const char *find_adb(const struct passwd *pw)
 {
 	static char path[PATH_MAX];
 	static const char *fixed[] = {
+		"/usr/bin/adb",
+		"/usr/lib/android-sdk/platform-tools/adb",
 		"/opt/homebrew/bin/adb",
 		"/usr/local/bin/adb",
 		"/opt/local/bin/adb",
 	};
 
 	if (pw && pw->pw_dir) {
-		snprintf(path, sizeof path, "%s/Library/Android/sdk/platform-tools/adb",
-		         pw->pw_dir);
-		if (access(path, X_OK) == 0)
-			return path;
+		static const char *homes[] = {
+			"%s/Library/Android/sdk/platform-tools/adb",
+			"%s/Android/Sdk/platform-tools/adb",
+		};
+		for (size_t i = 0; i < sizeof homes / sizeof homes[0]; i++) {
+			snprintf(path, sizeof path, homes[i], pw->pw_dir);
+			if (access(path, X_OK) == 0)
+				return path;
+		}
 	}
 	for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) {
 		if (access(fixed[i], X_OK) == 0) {
@@ -127,7 +221,7 @@ static void usage(const char *prog)
 	        "  -v            verbose\n"
 	        "  -q            errors only\n"
 	        "\n"
-	        "Needs root: creating a utun and editing routes are privileged.\n",
+	        "Needs root: creating a tun/utun and editing routes are privileged.\n",
 	        prog, (int)strlen(prog), "", ET_ADB_DEFAULT_PORT);
 }
 
@@ -165,7 +259,7 @@ int main(int argc, char **argv)
 	log_set_level(level);
 
 	if (geteuid() != 0) {
-		log_err("must run as root (creating a utun and setting routes are privileged)");
+		log_err("must run as root (creating a tun/utun and setting routes are privileged)");
 		return 1;
 	}
 
@@ -208,13 +302,20 @@ int main(int argc, char **argv)
 			dead_tries = 0;
 		} else if (++dead_tries >= 6) {
 			/*
-			 * Six connects in a row that never got as far as a lease:
-			 * the phone is unplugged or the app is closed.  Exit
-			 * successfully so launchd leaves us alone until the next
-			 * device-attach event rather than respawning forever.
+			 * Six connects in a row that never got as far as a lease.
+			 * If the ADB USB interface is still there, adbd is just
+			 * not ready yet (locked phone, USB mode not confirmed).
+			 * Keep going.  Only exit when the cable is actually gone,
+			 * so launchd/udev can start us on the next add.
 			 */
-			log_info("giving up until the phone is plugged in again");
-			return 0;
+			if (adb_usb_iface_present()) {
+				log_info("ADB USB is present but the phone is not "
+				         "ready; retrying");
+				dead_tries = 3;
+			} else {
+				log_info("giving up until the phone is plugged in again");
+				return 0;
+			}
 		}
 
 		log_info("retrying in %ds", backoff);

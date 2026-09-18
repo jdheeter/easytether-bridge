@@ -1,7 +1,9 @@
 #include "netcfg.h"
 #include "util.h"
 
+#ifndef __linux__
 #include <SystemConfiguration/SystemConfiguration.h>
+#endif
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -75,6 +77,140 @@ static int run(const char *path, char *const argv[], const char *stdin_text)
 	}
 	return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
+
+#ifdef __linux__
+
+static const char *ip_bin(void)
+{
+	if (access("/usr/sbin/ip", X_OK) == 0)
+		return "/usr/sbin/ip";
+	if (access("/sbin/ip", X_OK) == 0)
+		return "/sbin/ip";
+	return "/usr/sbin/ip";
+}
+
+static const char *resolvectl_bin(void)
+{
+	if (access("/usr/bin/resolvectl", X_OK) == 0)
+		return "/usr/bin/resolvectl";
+	return "/bin/resolvectl";
+}
+
+int netcfg_configure(const char *ifname, const struct dhcp_lease *l)
+{
+	char addr[16], peer[16], mtu[8], peerarg[32];
+	const char *ip = ip_bin();
+	int rc;
+
+	snprintf(addr, sizeof addr, "%s", fmt_ip(l->ip));
+	snprintf(peer, sizeof peer, "%s", fmt_ip(l->router ? l->router : l->ip));
+	snprintf(peerarg, sizeof peerarg, "%s/32", peer);
+	snprintf(mtu, sizeof mtu, "%u",
+	         l->mtu >= 576 && l->mtu <= ET_MTU ? l->mtu : ET_MTU);
+
+	{
+		char *const argv[] = { (char *)ip, "link", "set", "dev", (char *)ifname,
+		                       "mtu", mtu, "up", NULL };
+		rc = run(ip, argv, NULL);
+	}
+	if (rc != 0) {
+		log_err("ip link set %s up failed (status %d)", ifname, rc);
+		return -1;
+	}
+	{
+		char *const argv[] = { (char *)ip, "addr", "flush", "dev", (char *)ifname, NULL };
+		(void)run(ip, argv, NULL);
+	}
+	{
+		char *const argv[] = { (char *)ip, "addr", "add", addr, "peer", peerarg,
+		                       "dev", (char *)ifname, NULL };
+		rc = run(ip, argv, NULL);
+	}
+	if (rc != 0) {
+		log_err("ip addr add %s peer %s dev %s failed (status %d)",
+		        addr, peerarg, ifname, rc);
+		return -1;
+	}
+
+	log_info("%s: %s peer %s mtu %s", ifname, addr, peer, mtu);
+	return 0;
+}
+
+int netcfg_set_default_route(const char *ifname)
+{
+	static const char *halves[] = { "0.0.0.0/1", "128.0.0.0/1" };
+	const char *ip = ip_bin();
+
+	for (size_t i = 0; i < sizeof halves / sizeof halves[0]; i++) {
+		char *const argv[] = { (char *)ip, "route", "add", (char *)halves[i],
+		                       "dev", (char *)ifname, NULL };
+		if (run(ip, argv, NULL) != 0) {
+			log_err("%s is already routed elsewhere (a VPN?); refusing to "
+			        "take it over. Traffic will not go through the phone.",
+			        halves[i]);
+			return -1;
+		}
+	}
+
+	log_info("default route now goes through %s", ifname);
+	return 0;
+}
+
+int netcfg_set_dns(const char *service_id, const char *ifname, const struct dhcp_lease *l)
+{
+	const char *rc = resolvectl_bin();
+	char *argv[16];
+	int n = 0;
+	int st;
+
+	(void)service_id;
+	if (l->ndns <= 0) {
+		log_warn("phone offered no DNS servers; leaving the resolver alone");
+		return 0;
+	}
+
+	argv[n++] = (char *)rc;
+	argv[n++] = "dns";
+	argv[n++] = (char *)ifname;
+	for (int i = 0; i < l->ndns && n < 14; i++)
+		argv[n++] = (char *)fmt_ip(l->dns[i]);
+	argv[n] = NULL;
+	st = run(rc, argv, NULL);
+	if (st != 0) {
+		log_err("resolvectl dns %s failed (status %d)", ifname, st);
+		return -1;
+	}
+
+	{
+		char *const dargv[] = { (char *)rc, "domain", (char *)ifname, "~.", NULL };
+		(void)run(rc, dargv, NULL);
+	}
+	{
+		char *const rargv[] = { (char *)rc, "default-route", (char *)ifname, "yes", NULL };
+		(void)run(rc, rargv, NULL);
+	}
+
+	{
+		char list[256] = { 0 };
+		for (int i = 0; i < l->ndns; i++)
+			snprintf(list + strlen(list), sizeof list - strlen(list),
+			         "%s%s", i ? ", " : "", fmt_ip(l->dns[i]));
+		log_info("DNS: %s%s%s", list, l->domain[0] ? " domain " : "", l->domain);
+	}
+	return 0;
+}
+
+int netcfg_clear_dns(const char *service_id)
+{
+	const char *rc = resolvectl_bin();
+	char *const argv[] = { (char *)rc, "revert", "tun-easytether", NULL };
+
+	(void)service_id;
+	(void)run(rc, argv, NULL);
+	return 0;
+}
+
+#else /* Darwin */
 
 int netcfg_configure(const char *ifname, const struct dhcp_lease *l)
 {
@@ -336,3 +472,5 @@ int netcfg_clear_dns(const char *service_id)
 	g_store = NULL;
 	return 0;
 }
+
+#endif /* __linux__ / Darwin */
