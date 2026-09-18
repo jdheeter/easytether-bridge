@@ -19,9 +19,7 @@ install -d "$PREFIX/bin"
 install -m 755 easytether-bridge "$PREFIX/bin/easytether-bridge"
 install -m 755 gui/easytether-tray.py "$PREFIX/bin/easytether-tray"
 
-install -d /usr/share/applications
-cat > /usr/share/applications/easytether-tray.desktop << EOF
-[Desktop Entry]
+DESKTOP_BODY="[Desktop Entry]
 Name=EasyTether
 Comment=USB tethering via the EasyTether Android app
 Exec=$PREFIX/bin/easytether-tray
@@ -30,7 +28,18 @@ Terminal=false
 Type=Application
 Categories=Network;
 StartupNotify=false
-EOF
+X-GNOME-Autostart-enabled=true
+"
+
+install -d /usr/share/applications /etc/xdg/autostart
+printf '%s' "$DESKTOP_BODY" > /usr/share/applications/easytether-tray.desktop
+printf '%s' "$DESKTOP_BODY" > /etc/xdg/autostart/easytether-tray.desktop
+
+# The 2018 vendor package also claims tun-easytether via udev. Mask it so
+# easytether-bridge is the only host driver.
+if [[ -f /lib/systemd/system/easytether-usb@.service ]]; then
+	systemctl mask easytether-usb@.service >/dev/null 2>&1 || true
+fi
 
 install -d /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/unmanaged-easytether.conf << 'EOF'

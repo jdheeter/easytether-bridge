@@ -141,8 +141,10 @@ sudo easytether-bridge -v
 ```
 
 `linux/install.sh` puts the binary in `/usr/local/bin`, a tray app in the
-desktop menu, a passwordless sudoers drop-in for the bridge, and tells
-NetworkManager not to grab `tun-easytether`.
+desktop menu (autostarted on login), a passwordless sudoers drop-in for the
+bridge, and tells NetworkManager not to grab `tun-easytether`. If the 2018
+vendor `easytether` package is present, the installer masks
+`easytether-usb@.service` so it cannot steal the same TUN.
 
 Before it can connect, all three of these must be true:
 
