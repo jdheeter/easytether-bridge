@@ -19,11 +19,34 @@ install -d "$PREFIX/bin"
 install -m 755 easytether-bridge "$PREFIX/bin/easytether-bridge"
 install -m 755 gui/easytether-tray.py "$PREFIX/bin/easytether-tray"
 
+ICON_DIR="$PREFIX/share/easytether-bridge/icons"
+install -d "$ICON_DIR"
+install -m 644 gui/icons/easytether-connected.svg gui/icons/easytether-offline.svg \
+	gui/icons/easytether.svg "$ICON_DIR/"
+shopt -s nullglob
+pngs=(gui/icons/*.png)
+shopt -u nullglob
+if ((${#pngs[@]})); then
+	install -m 644 "${pngs[@]}" "$ICON_DIR/"
+fi
+install -d "$PREFIX/share/icons/hicolor/scalable/apps"
+install -d "$PREFIX/share/icons/hicolor/48x48/apps"
+install -m 644 gui/icons/easytether.svg \
+	"$PREFIX/share/icons/hicolor/scalable/apps/easytether.svg"
+if [[ -f gui/icons/easytether@2.png ]]; then
+	install -m 644 gui/icons/easytether@2.png \
+		"$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+elif [[ -f gui/icons/easytether.png ]]; then
+	install -m 644 gui/icons/easytether.png \
+		"$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+fi
+gtk-update-icon-cache -f "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true
+
 DESKTOP_BODY="[Desktop Entry]
 Name=EasyTether
 Comment=USB tethering via the EasyTether Android app
 Exec=$PREFIX/bin/easytether-tray
-Icon=network-wireless
+Icon=easytether
 Terminal=false
 Type=Application
 Categories=Network;

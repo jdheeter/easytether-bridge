@@ -37,8 +37,22 @@ UNIT = "easytether-bridge.service"
 SYSTEMCTL = shutil.which("systemctl") or "/usr/bin/systemctl"
 IFNAME = "tun-easytether"
 STATS = Path(f"/sys/class/net/{IFNAME}/statistics")
-ICON_UP = "network-transmit-receive-symbolic"
-ICON_DOWN = "network-offline-symbolic"
+ICON_UP = "easytether-connected"
+ICON_DOWN = "easytether-offline"
+
+
+def icon_dir() -> Path | None:
+    here = Path(__file__).resolve().parent
+    cands = (
+        Path("/usr/local/share/easytether-bridge/icons"),
+        Path("/usr/share/easytether-bridge/icons"),
+        here / "icons",
+        here.parent / "gui" / "icons",
+    )
+    for p in cands:
+        if (p / f"{ICON_UP}.png").exists() or (p / f"{ICON_UP}.svg").exists():
+            return p
+    return None
 
 
 def iface_up() -> bool:
@@ -192,6 +206,9 @@ class App:
             ICON_DOWN,
             INDICATOR.IndicatorCategory.SYSTEM_SERVICES,
         )
+        idir = icon_dir()
+        if idir is not None:
+            self.indicator.set_icon_theme_path(str(idir))
         self.indicator.set_status(INDICATOR.IndicatorStatus.ACTIVE)
         self.indicator.set_title("EasyTether")
         self.indicator.set_menu(menu)
