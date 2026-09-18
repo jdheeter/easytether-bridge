@@ -16,7 +16,7 @@ if [[ -d /sys/class/net/$IF ]]; then
 else
 	bad "no $IF -- is the daemon running?"
 	echo
-	echo "start it with:  sudo easytether-bridge -v"
+	echo "start it with:  sudo systemctl start easytether-bridge"
 	exit 1
 fi
 
@@ -38,12 +38,14 @@ else
 fi
 
 say "Does traffic actually reach the internet through the phone?"
-IP=$(curl -s -m 15 https://api.ipify.org 2>/dev/null || true)
-if [[ -n $IP ]]; then
-	ok "public address is $IP"
-	note "if that is your mobile carrier's address, the tether is carrying your traffic"
+# TCP/HTTPS only — ICMP to the internet will not work. Prefer example.com;
+# some carriers time out on ipify and similar echo services.
+CODE=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' https://example.com 2>/dev/null || true)
+if [[ $CODE == 200 ]]; then
+	ok "https://example.com returned 200"
+	note "EasyTether is TCP/UDP only; ping to the internet will fail"
 else
-	bad "could not reach the internet"
+	bad "could not fetch https://example.com (HTTP ${CODE:-timeout})"
 fi
 
 if getent hosts example.com >/dev/null 2>&1; then

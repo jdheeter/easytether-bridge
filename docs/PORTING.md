@@ -18,12 +18,13 @@ pure computation over byte buffers.
 | `src/adb.c/h` | 283 | BSD sockets, `posix_spawn`, `waitpid` | Reuse the logic; swap the socket calls. |
 | `src/bridge.c/h` | 825 | `poll` | Reuse the state machine and forwarding; replace the multiplexing. |
 | `src/main.c` | 230 | `signal`, `getopt`, `gethostuuid`, `getpwnam`, `usleep` | Mechanical. |
-| `src/utun.c/h` | 152 | entirely macOS | **Rewrite.** |
-| `src/netcfg.c/h` | 377 | entirely macOS | **Rewrite**, or delete most of it — see §3. |
+| `src/utun.c/h` | ~240 | Darwin `utun` + Linux TUN | Linux is done (`#ifdef __linux__`). Windows still a rewrite. |
+| `src/netcfg.c/h` | ~500 | Darwin SCDynamicStore + Linux iproute2/resolvectl | Linux is done. Windows still a rewrite, or delete most of it — see §3. |
 
-Of 2769 lines under `src/`: **643 move unchanged**, about 1597 need mechanical
-changes, and 529 (`utun.c` + `netcfg.c`) are genuinely new work. The part that
-was hard to obtain — the reverse-engineered protocol — is the part that moves
+Linux is no longer a porting target: Ubuntu 24.04 uses the same protocol core
+and a TUN + iproute2 backend, with a systemd unit, udev rule, and tray. The
+remaining new work is Windows (`utun.c` / `netcfg.c` / the event loop). The
+part that was hard to obtain — the reverse-engineered protocol — still moves
 for free.
 
 The test harness ports too: `test/testutil.c` holds the framing over a socket

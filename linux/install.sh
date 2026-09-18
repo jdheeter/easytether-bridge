@@ -14,6 +14,34 @@ if [[ "$(id -u)" -ne 0 ]]; then
 	exit 1
 fi
 
+uninstall() {
+	systemctl disable --now easytether-bridge.service >/dev/null 2>&1 || true
+	rm -f /etc/systemd/system/easytether-bridge.service
+	rm -f /etc/udev/rules.d/99-easytether-bridge.rules
+	if [[ -L /etc/udev/rules.d/99-easytether-usb.rules ]]; then
+		rm -f /etc/udev/rules.d/99-easytether-usb.rules
+	fi
+	udevadm control --reload-rules 2>/dev/null || true
+	systemctl unmask easytether-usb@.service >/dev/null 2>&1 || true
+	systemctl daemon-reload 2>/dev/null || true
+	rm -f "$PREFIX/bin/easytether-bridge" "$PREFIX/bin/easytether-tray"
+	rm -rf "$PREFIX/share/easytether-bridge"
+	rm -f "$PREFIX/share/icons/hicolor/scalable/apps/easytether.svg"
+	rm -f "$PREFIX/share/icons/hicolor/48x48/apps/easytether.png"
+	rm -f /usr/share/applications/easytether-tray.desktop
+	rm -f /etc/xdg/autostart/easytether-tray.desktop
+	rm -f /etc/NetworkManager/conf.d/unmanaged-easytether.conf
+	rm -f /etc/sudoers.d/easytether-bridge
+	echo "removed easytether-bridge"
+}
+
+case "${1:-}" in
+"") ;;
+--uninstall) uninstall; exit 0 ;;
+*)	echo "usage: $0 [--uninstall]" >&2
+	exit 2 ;;
+esac
+
 make
 install -d "$PREFIX/bin"
 install -m 755 easytether-bridge "$PREFIX/bin/easytether-bridge"
@@ -69,7 +97,8 @@ if [[ -z "$OWNER" || "$OWNER" == "root" ]]; then
 	OWNER="$(loginctl list-users --no-legend 2>/dev/null | awk '$2!="root"{print $2; exit}')"
 fi
 if [[ -z "$OWNER" ]]; then
-	OWNER="osis"
+	echo "could not determine a login user for ADB keys; run via sudo so SUDO_USER is set" >&2
+	exit 1
 fi
 
 install -d /etc/systemd/system

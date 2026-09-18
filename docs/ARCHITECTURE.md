@@ -42,12 +42,13 @@ this OS is layer 3 and the protocol is layer 2.
 | `src/adb.c/h` | 283 | Mostly | ADB host-protocol client. BSD sockets + `posix_spawn`. |
 | `src/bridge.c/h` | 825 | Partly | One session: event loop, DHCP/ARP state machine, forwarding. The logic is portable; the I/O multiplexing is not. |
 | `src/main.c` | 230 | Partly | The process: arguments, privileges, signals, locating the ADB server, reconnect loop. |
-| `src/utun.c/h` | 152 | **No** | The virtual interface. Wholly macOS-specific. |
-| `src/netcfg.c/h` | 377 | **No** | Address, routes and resolver. Wholly macOS-specific. |
+| `src/utun.c/h` | ~240 | **No** | The virtual interface. Darwin `utun` and Linux `/dev/net/tun`. |
+| `src/netcfg.c/h` | ~500 | **No** | Address, routes and resolver. Darwin SCDynamicStore; Linux iproute2 + resolvectl. |
 
 Line counts include headers. The split is deliberate: **`proto.c` is the
-valuable part and it is pure.** A port reuses it unchanged. `utun.c` and `netcfg.c` are the two files that get
-rewritten. See [PORTING.md](PORTING.md).
+valuable part and it is pure.** A port reuses it unchanged. Linux already
+lives behind `#ifdef __linux__` in `utun.c` and `netcfg.c`; Windows still
+rewrites those two. See [PORTING.md](PORTING.md).
 
 ## 3. Data flow
 
