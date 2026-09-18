@@ -31,6 +31,9 @@
 #ifdef __APPLE__
 #include <uuid/uuid.h>
 #endif
+#ifdef __linux__
+#include <dirent.h>
+#endif
 
 /* ------------------------------------------------------------ addressing */
 /*
@@ -96,6 +99,71 @@ static const struct passwd *console_user(void)
 	if (stat("/dev/console", &st) == 0 && st.st_uid != 0)
 		return getpwuid(st.st_uid);
 	return NULL;
+}
+
+/*
+ * Linux: ADB is USB class 255 / subclass 66 / protocol 1.  After reboot the
+ * phone is often plugged in before adbd is ready (still locked, or the USB
+ * mode notification has not been accepted).  launchd/udev only start us on
+ * the *add* event, so giving up while that interface still exists leaves the
+ * daemon dead until the next unplug.  Keep retrying in that case.
+ */
+static int adb_usb_iface_present(void)
+{
+#ifdef __linux__
+	DIR *dir = opendir("/sys/bus/usb/devices");
+	struct dirent *de;
+
+	if (!dir)
+		return 0;
+	while ((de = readdir(dir)) != NULL) {
+		char path[512];
+		unsigned cls = 0, sub = 0, proto = 0;
+		FILE *f;
+		int n = 0;
+
+		if (!strchr(de->d_name, ':'))
+			continue;
+		n = snprintf(path, sizeof path,
+		             "/sys/bus/usb/devices/%s/bInterfaceClass", de->d_name);
+		if (n < 0 || (size_t)n >= sizeof path)
+			continue;
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &cls) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		snprintf(path, sizeof path,
+		         "/sys/bus/usb/devices/%s/bInterfaceSubClass", de->d_name);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &sub) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		snprintf(path, sizeof path,
+		         "/sys/bus/usb/devices/%s/bInterfaceProtocol", de->d_name);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (fscanf(f, "%x", &proto) != 1) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		if (cls == 0xff && sub == 0x42 && proto == 0x01) {
+			closedir(dir);
+			return 1;
+		}
+	}
+	closedir(dir);
+#endif
+	return 0;
 }
 
 static const char *find_adb(const struct passwd *pw)
@@ -234,13 +302,20 @@ int main(int argc, char **argv)
 			dead_tries = 0;
 		} else if (++dead_tries >= 6) {
 			/*
-			 * Six connects in a row that never got as far as a lease:
-			 * the phone is unplugged or the app is closed.  Exit
-			 * successfully so launchd leaves us alone until the next
-			 * device-attach event rather than respawning forever.
+			 * Six connects in a row that never got as far as a lease.
+			 * If the ADB USB interface is still there, adbd is just
+			 * not ready yet (locked phone, USB mode not confirmed).
+			 * Keep going.  Only exit when the cable is actually gone,
+			 * so launchd/udev can start us on the next add.
 			 */
-			log_info("giving up until the phone is plugged in again");
-			return 0;
+			if (adb_usb_iface_present()) {
+				log_info("ADB USB is present but the phone is not "
+				         "ready; retrying");
+				dead_tries = 3;
+			} else {
+				log_info("giving up until the phone is plugged in again");
+				return 0;
+			}
 		}
 
 		log_info("retrying in %ds", backoff);

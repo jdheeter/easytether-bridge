@@ -1,7 +1,7 @@
 [Unit]
 Description=EasyTether host driver (ADB to tun-easytether)
 Documentation=https://github.com/jdheeter/easytether-bridge
-After=network.target
+After=network.target systemd-udevd.service
 
 [Service]
 Type=simple
