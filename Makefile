@@ -2,16 +2,21 @@ BIN      := easytether-bridge
 PREFIX   ?= /usr/local
 SRC      := $(wildcard src/*.c)
 OBJ      := $(SRC:.c=.o)
+UNAME_S  := $(shell uname -s)
 
 CFLAGS   ?= -O2 -g
 CFLAGS   += -std=c11 -Wall -Wextra -Wshadow -Wpointer-arith -Wstrict-prototypes \
-            -Wno-unused-parameter -D_DARWIN_C_SOURCE
-LDFLAGS  += -framework SystemConfiguration -framework CoreFoundation
+            -Wno-unused-parameter
 
-# Build for whichever Mac this is; add both for a universal binary.
+ifeq ($(UNAME_S),Darwin)
+CFLAGS   += -D_DARWIN_C_SOURCE
+LDFLAGS  += -framework SystemConfiguration -framework CoreFoundation
 ARCHS    ?= $(shell uname -m)
 CFLAGS   += $(foreach a,$(ARCHS),-arch $(a))
 LDFLAGS  += $(foreach a,$(ARCHS),-arch $(a))
+else
+CFLAGS   += -D_GNU_SOURCE
+endif
 
 .PHONY: all clean install uninstall universal
 

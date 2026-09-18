@@ -25,9 +25,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
 #include <uuid/uuid.h>
+#endif
 
 /* ------------------------------------------------------------ addressing */
 /*
@@ -36,17 +39,33 @@
  */
 static void make_mac(uint8_t mac[ETH_ALEN])
 {
-	uuid_t host;
-	struct timespec wait = { 0, 0 };
+	uint8_t host[32];
 	uint64_t h = 1469598103934665603ULL;   /* FNV-1a */
-	const uint8_t *p;
+	size_t n = 0;
 
-	if (gethostuuid(host, &wait) != 0)
-		memset(host, 0x5a, sizeof host);
+	memset(host, 0x5a, sizeof host);
+#ifdef __APPLE__
+	{
+		uuid_t uuid;
+		struct timespec wait = { 0, 0 };
+		if (gethostuuid(uuid, &wait) == 0) {
+			memcpy(host, uuid, sizeof uuid);
+			n = sizeof uuid;
+		}
+	}
+#endif
+	if (n == 0) {
+		FILE *f = fopen("/etc/machine-id", "r");
+		if (f) {
+			n = fread(host, 1, sizeof host, f);
+			fclose(f);
+		}
+	}
+	if (n == 0)
+		n = sizeof host;
 
-	p = (const uint8_t *)host;
-	for (size_t i = 0; i < sizeof(uuid_t); i++) {
-		h ^= p[i];
+	for (size_t i = 0; i < n; i++) {
+		h ^= host[i];
 		h *= 1099511628211ULL;
 	}
 
@@ -83,16 +102,23 @@ static const char *find_adb(const struct passwd *pw)
 {
 	static char path[PATH_MAX];
 	static const char *fixed[] = {
+		"/usr/bin/adb",
+		"/usr/lib/android-sdk/platform-tools/adb",
 		"/opt/homebrew/bin/adb",
 		"/usr/local/bin/adb",
 		"/opt/local/bin/adb",
 	};
 
 	if (pw && pw->pw_dir) {
-		snprintf(path, sizeof path, "%s/Library/Android/sdk/platform-tools/adb",
-		         pw->pw_dir);
-		if (access(path, X_OK) == 0)
-			return path;
+		static const char *homes[] = {
+			"%s/Library/Android/sdk/platform-tools/adb",
+			"%s/Android/Sdk/platform-tools/adb",
+		};
+		for (size_t i = 0; i < sizeof homes / sizeof homes[0]; i++) {
+			snprintf(path, sizeof path, homes[i], pw->pw_dir);
+			if (access(path, X_OK) == 0)
+				return path;
+		}
 	}
 	for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) {
 		if (access(fixed[i], X_OK) == 0) {
@@ -127,7 +153,7 @@ static void usage(const char *prog)
 	        "  -v            verbose\n"
 	        "  -q            errors only\n"
 	        "\n"
-	        "Needs root: creating a utun and editing routes are privileged.\n",
+	        "Needs root: creating a tun/utun and editing routes are privileged.\n",
 	        prog, (int)strlen(prog), "", ET_ADB_DEFAULT_PORT);
 }
 
@@ -165,7 +191,7 @@ int main(int argc, char **argv)
 	log_set_level(level);
 
 	if (geteuid() != 0) {
-		log_err("must run as root (creating a utun and setting routes are privileged)");
+		log_err("must run as root (creating a tun/utun and setting routes are privileged)");
 		return 1;
 	}
 

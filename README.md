@@ -101,6 +101,8 @@ fixed `192.168.117.0/24`, takes `.1` as the gateway, and answers ARP.
 
 ## Building and installing
 
+### macOS
+
 ```bash
 make && make check
 sudo ./install.sh
@@ -121,6 +123,26 @@ replug.
 
 Never run one by hand while the LaunchDaemon is loaded. The phone serves a
 single client, so the second one sits there failing DHCP until it gives up.
+
+### Linux (Ubuntu 24.04)
+
+The vendor's last Linux package is Ubuntu 20.04 and needs OpenSSL 1.1. This
+tree speaks the same protocol over ADB and presents the link as `tun-easytether`
+(layer 3, same as macOS utun).
+
+```bash
+sudo apt install build-essential adb python3-gi gir1.2-gtk-3.0 \
+  gir1.2-ayatanaappindicator3-0.1
+make && make check && make protocol-test
+sudo ./linux/install.sh
+easytether-tray          # Connect from the tray / window
+# or:
+sudo easytether-bridge -v
+```
+
+`linux/install.sh` puts the binary in `/usr/local/bin`, a tray app in the
+desktop menu, a passwordless sudoers drop-in for the bridge, and tells
+NetworkManager not to grab `tun-easytether`.
 
 Before it can connect, all three of these must be true:
 
